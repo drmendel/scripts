@@ -29,21 +29,68 @@ check_dependencies() {
 }
 
 ask_for_targetip() {
-    local targetip
+    local targetip=""
     read -r -p "Target IP: " targetip
     printf '%s' "$targetip"
 }
 
 ask_for_username() {
-    local username
+    local username=""
     read -r -p "Username: " username
     printf '%s' "$username"
 }
 
 ask_for_password() {
-    local password
-    read -r -s -p "Password: " password
-    printf '\n' >&2
+    local password=""
+    local char=""
+    local charset="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+
+    # We will use this to remember how many chars were printed per keystroke
+    # so we can delete the correct amount if the user presses Backspace.
+    local mask_lengths=""
+
+    printf "Password: " >&2
+
+    while IFS= read -r -s -n 1 char; do
+        if [[ -z $char ]]; then
+            printf '\n' >&2
+            break
+        elif [[ $char == $'\x7f' || $char == $'\x08' ]]; then
+            if [[ -n $password ]]; then
+
+                # Remove the last character from the actual password
+                password="${password%?}"
+
+                # Look up how many random characters were printed for this keystroke
+                local n_to_delete="${mask_lengths: -1}"
+
+                # Remove that number from our tracking string
+                mask_lengths="${mask_lengths%?}"
+
+                # Erase exactly that many characters from the screen
+                for ((i=0; i<n_to_delete; i++)); do
+                    printf '\b \b' >&2
+                done
+            fi
+        else
+            # Append typed character to the real password
+            password+="$char"
+
+            # Generate a random number between 1 and 3
+            local n_mask=$(( (RANDOM % 3) + 1 ))
+
+            # Save this number so Backspace knows about it later
+            mask_lengths+="$n_mask"
+
+            # Print that many random characters to the screen
+            for ((i=0; i<n_mask; i++)); do
+                local random_char="${charset:RANDOM%${#charset}:1}"
+                printf '%s' "$random_char" >&2
+            done
+        fi
+    done
+
+    # Output the real password silently
     printf '%s' "$password"
 }
 
@@ -79,19 +126,19 @@ edit_profile() {
     echo ""
     echo "Editing profile: $prof_name"
     echo "(Leave blank and press Enter to keep current value)"
-    
-    local new_ip
+
+    local new_ip=""
     read -r -p "Target IP [$TARGET_IP]: " new_ip
     [[ -n "$new_ip" ]] && TARGET_IP="$new_ip"
 
-    local new_user
+    local new_user=""
     read -r -p "Username [$USERNAME]: " new_user
     [[ -n "$new_user" ]] && USERNAME="$new_user"
 
-    local new_pass
-    read -r -s -p "Password [********]: " new_pass
+    local password=""
+    password="$(ask_for_password)"
     echo ""
-    [[ -n "$new_pass" ]] && PASSWORD="$new_pass"
+    [[ -n "$password" ]] && PASSWORD="$password"
 
     save_profile "$prof_name"
     echo "Profile '$prof_name' updated successfully."
@@ -111,11 +158,13 @@ get_credentials() {
 
     # Interactive Menu
     while true; do
+        clear
+        echo ""
         cat << 'EOF'
                                                        )      ((     (
                                                       (        ))     )
                                                       )       )      //     (
-    ____                       __                        _   (        __    (      ~->>
+    ____                        __                       _   (        __    (      ~->>
    / __ \___  ____ ___  ____  / /____              ,-----' |__,_~~___<'__`)-~__--__-~->> <
   / /_/ / _ \/ __ `__ \/ __ \/ __/ _ \             | //  : | -__   ~__ o)____)),__ - '> >-  >
  / _, _/  __/ / / / / / /_/ / /_/  __/             | //  : |- \_ \ -\_\ -\ \ \ ~\_  \ ->> - ,  >>
@@ -154,7 +203,7 @@ EOF
         echo "$quit_opt) Quit"
 
         echo ""
-        local choice
+        local choice=""
         read -r -p "Select option: " choice
 
         # Validate input is an integer
@@ -165,7 +214,9 @@ EOF
 
         if [[ "$choice" -eq "$new_opt" ]]; then
             TARGET_IP="$(ask_for_targetip)"
+            echo ""
             USERNAME="$(ask_for_username)"
+            echo ""
             PASSWORD="$(ask_for_password)"
             PROFILE_LOADED=false
             break
@@ -174,8 +225,9 @@ EOF
                 echo "No profiles to edit."
                 continue
             fi
+            local edit_choice=""
             read -r -p "Enter profile number to edit: " edit_choice
-            if [[ "$edit_choice" -ge 1 && "$edit_choice" -le ${#prof_names[@]} ]]; then
+            if [[ "$edit_choice" =~ ^[0-9]+$ ]] && [[ "$edit_choice" -ge 1 && "$edit_choice" -le ${#prof_names[@]} ]]; then
                 local idx=$((edit_choice-1))
                 edit_profile "${prof_names[$idx]}"
             else
@@ -187,8 +239,9 @@ EOF
                 echo "No profiles to delete."
                 continue
             fi
+            local del_choice=""
             read -r -p "Enter profile number to delete: " del_choice
-            if [[ "$del_choice" -ge 1 && "$del_choice" -le ${#prof_names[@]} ]]; then
+            if [[ "$del_choice" =~ ^[0-9]+$ ]] && [[ "$del_choice" -ge 1 && "$del_choice" -le ${#prof_names[@]} ]]; then
                 local idx=$((del_choice-1))
                 rm -f "$PROFILES_DIR/${prof_names[$idx]}"
                 echo "Profile '${prof_names[$idx]}' deleted."
@@ -255,8 +308,10 @@ main() {
     # Only prompt to save if we didn't load an existing profile
     if [[ "$PROFILE_LOADED" == false ]]; then
         echo ""
+        local save_ans=""
         read -r -p "Do you want to save this connection as a profile? (y/N): " save_ans
         if [[ "$save_ans" =~ ^[Yy]$ ]]; then
+            local prof_name=""
             read -r -p "Enter profile name (e.g., HomePC, WorkServer): " prof_name
             if [[ -n "$prof_name" ]]; then
                 save_profile "$prof_name"
