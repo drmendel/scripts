@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+
+set -u
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/xfreerdp3-login"
+PROFILES_DIR="$CONFIG_DIR/profiles"
+
+TARGET_IP=""
+USERNAME=""
+PASSWORD=""
+PROFILE_LOADED=false
+
+usage() {
+    echo "Usage: $0 [username] [password] [target_ip]"
+    echo "Run without arguments to access the interactive profile menu."
+    exit 1
+}
+
+check_dependencies() {
+    if ! command -v xfreerdp3 >/dev/null 2>&1; then
+        echo "Error: xfreerdp3 is not installed or not in PATH."
+        exit 127
+    fi
+
+    if ! command -v base64 >/dev/null 2>&1; then
+        echo "Error: base64 is not installed or not in PATH."
+        exit 127
+    fi
+}
+
+ask_for_targetip() {
+    local targetip
+    read -r -p "Target IP: " targetip
+    printf '%s' "$targetip"
+}
+
+ask_for_username() {
+    local username
+    read -r -p "Username: " username
+    printf '%s' "$username"
+}
+
+ask_for_password() {
+    local password
+    read -r -s -p "Password: " password
+    printf '\n' >&2
+    printf '%s' "$password"
+}
+
+load_profile() {
+    local prof_name="$1"
+    local file="$PROFILES_DIR/$prof_name"
+
+    TARGET_IP="$(sed -n '1p' "$file" | base64 -d 2>/dev/null)"
+    USERNAME="$(sed -n '2p' "$file" | base64 -d 2>/dev/null)"
+    PASSWORD="$(sed -n '3p' "$file" | base64 -d 2>/dev/null)"
+}
+
+save_profile() {
+    local prof_name="$1"
+    local file="$PROFILES_DIR/$prof_name"
+
+    {
+        printf '%s' "$TARGET_IP" | base64 | tr -d '\n'
+        printf '\n'
+        printf '%s' "$USERNAME" | base64 | tr -d '\n'
+        printf '\n'
+        printf '%s' "$PASSWORD" | base64 | tr -d '\n'
+        printf '\n'
+    } > "$file"
+
+    chmod 600 "$file"
+}
+
+edit_profile() {
+    local prof_name="$1"
+    load_profile "$prof_name"
+
+    echo ""
+    echo "Editing profile: $prof_name"
+    echo "(Leave blank and press Enter to keep current value)"
+    
+    local new_ip
+    read -r -p "Target IP [$TARGET_IP]: " new_ip
+    [[ -n "$new_ip" ]] && TARGET_IP="$new_ip"
+
+    local new_user
+    read -r -p "Username [$USERNAME]: " new_user
+    [[ -n "$new_user" ]] && USERNAME="$new_user"
+
+    local new_pass
+    read -r -s -p "Password [********]: " new_pass
+    echo ""
+    [[ -n "$new_pass" ]] && PASSWORD="$new_pass"
+
+    save_profile "$prof_name"
+    echo "Profile '$prof_name' updated successfully."
+}
+
+get_credentials() {
+    # If passed via arguments, bypass the menu
+    if [[ $# -ge 2 ]]; then
+        USERNAME="$1"
+        PASSWORD="$2"
+        TARGET_IP="${3:-}"
+        if [[ -z "$TARGET_IP" ]]; then
+            TARGET_IP="$(ask_for_targetip)"
+        fi
+        return
+    fi
+
+    # Interactive Menu
+    while true; do
+        cat << 'EOF'
+                                                       )      ((     (
+                                                      (        ))     )
+                                                      )       )      //     (
+    ____                       __                        _   (        __    (      ~->>
+   / __ \___  ____ ___  ____  / /____              ,-----' |__,_~~___<'__`)-~__--__-~->> <
+  / /_/ / _ \/ __ `__ \/ __ \/ __/ _ \             | //  : | -__   ~__ o)____)),__ - '> >-  >
+ / _, _/  __/ / / / / / /_/ / /_/  __/             | //  : |- \_ \ -\_\ -\ \ \ ~\_  \ ->> - ,  >>
+/_/ |_|\___/_/ /_/ /_/\____/\__/\___/              | //  : |_~_\ -\__\ \~'\ \ \, \__ . -<-  >>
+    ____            __   __                        `-----._| `  -__`-- - ~~ -- ` --~> >
+   / __ \___  _____/ /__/ /_____  ____             _/___\_    //)_`//  | ||]
+  / / / / _ \/ ___/ //_/ __/ __ \/ __ \      _____[_______]_[~~-_ (.L_/  ||
+ / /_/ /  __(__  ) ,< / /_/ /_/ / /_/ /     [____________________]' `\_,/'/
+/_____/\___/____/_/|_|\__/\____/ .___/        ||| /          |||  ,___,'./
+                               /_/            ||| \          |||,'______|
+                                              ||| /          /|| I==||
+                                              ||| \       __/_||  __||__
+                                         -----||-/------`-._/||-o--o---o---
+                                              ~~~~~'
+EOF
+        local -a prof_names=()
+        local i=1
+
+        # List existing profiles
+        for f in "$PROFILES_DIR"/*; do
+            [[ -e "$f" ]] || continue # Skip if directory is empty
+            prof_names+=("$(basename "$f")")
+            echo "$i) ${prof_names[-1]}"
+            ((i++))
+        done
+
+        echo ""
+
+        local new_opt=$i
+        echo "$new_opt) Create New Connection"
+        local edit_opt=$((i+1))
+        echo "$edit_opt) Edit a Profile"
+        local del_opt=$((i+2))
+        echo "$del_opt) Delete a Profile"
+        local quit_opt=$((i+3))
+        echo "$quit_opt) Quit"
+
+        echo ""
+        local choice
+        read -r -p "Select option: " choice
+
+        # Validate input is an integer
+        if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+            echo "Invalid input. Please enter a number."
+            continue
+        fi
+
+        if [[ "$choice" -eq "$new_opt" ]]; then
+            TARGET_IP="$(ask_for_targetip)"
+            USERNAME="$(ask_for_username)"
+            PASSWORD="$(ask_for_password)"
+            PROFILE_LOADED=false
+            break
+        elif [[ "$choice" -eq "$edit_opt" ]]; then
+            if [[ ${#prof_names[@]} -eq 0 ]]; then
+                echo "No profiles to edit."
+                continue
+            fi
+            read -r -p "Enter profile number to edit: " edit_choice
+            if [[ "$edit_choice" -ge 1 && "$edit_choice" -le ${#prof_names[@]} ]]; then
+                local idx=$((edit_choice-1))
+                edit_profile "${prof_names[$idx]}"
+            else
+                echo "Invalid profile number."
+            fi
+            # Continues back to the main menu loop after editing
+        elif [[ "$choice" -eq "$del_opt" ]]; then
+            if [[ ${#prof_names[@]} -eq 0 ]]; then
+                echo "No profiles to delete."
+                continue
+            fi
+            read -r -p "Enter profile number to delete: " del_choice
+            if [[ "$del_choice" -ge 1 && "$del_choice" -le ${#prof_names[@]} ]]; then
+                local idx=$((del_choice-1))
+                rm -f "$PROFILES_DIR/${prof_names[$idx]}"
+                echo "Profile '${prof_names[$idx]}' deleted."
+            else
+                echo "Invalid profile number."
+            fi
+        elif [[ "$choice" -eq "$quit_opt" ]]; then
+            exit 0
+        elif [[ "$choice" -ge 1 && "$choice" -le ${#prof_names[@]} ]]; then
+            local idx=$((choice-1))
+            load_profile "${prof_names[$idx]}"
+            echo "Loaded profile: ${prof_names[$idx]}"
+            PROFILE_LOADED=true
+            break
+        else
+            echo "Invalid option."
+        fi
+    done
+}
+
+run_rdp() {
+    local username="$1"
+    local password="$2"
+    local targetip="$3"
+
+    xfreerdp3 \
+        "/u:$username" \
+        "/p:$password" \
+        "/v:$targetip" \
+        /cert:ignore \
+        /sound:sys:alsa \
+        /clipboard \
+        /f
+}
+
+is_successful_rdp_exit() {
+    local exit_code="$1"
+
+    case "$exit_code" in
+        0|12)
+            # 0 = Clean exit, 12 = User logged off from the remote session
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+main() {
+    check_dependencies
+
+    # Setup directories
+    mkdir -p "$PROFILES_DIR"
+    chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+    chmod 700 "$PROFILES_DIR" 2>/dev/null || true
+
+    get_credentials "$@"
+
+    echo "Connecting to $TARGET_IP..."
+    run_rdp "$USERNAME" "$PASSWORD" "$TARGET_IP" > /dev/null 2> /dev/null
+    local rdp_exit=$?
+
+    # Only prompt to save if we didn't load an existing profile
+    if [[ "$PROFILE_LOADED" == false ]]; then
+        echo ""
+        read -r -p "Do you want to save this connection as a profile? (y/N): " save_ans
+        if [[ "$save_ans" =~ ^[Yy]$ ]]; then
+            read -r -p "Enter profile name (e.g., HomePC, WorkServer): " prof_name
+            if [[ -n "$prof_name" ]]; then
+                save_profile "$prof_name"
+                echo "Profile '$prof_name' saved successfully."
+            else
+                echo "No name provided, skipping save."
+            fi
+        fi
+    fi
+
+    if is_successful_rdp_exit "$rdp_exit"; then
+        echo "Connection closed..."
+        exit 0
+    else
+        echo "RDP session closed with exit code $rdp_exit."
+        exit "$rdp_exit"
+    fi
+}
+
+main "$@"
