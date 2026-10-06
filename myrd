@@ -273,6 +273,7 @@ run_rdp() {
         "/v:$targetip" \
         /cert:ignore \
         /sound:sys:alsa \
+        /microphone:sys:alsa \
         /clipboard \
         /f
 }
