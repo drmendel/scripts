@@ -5,14 +5,18 @@ set -u
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/xfreerdp3-login"
 PROFILES_DIR="$CONFIG_DIR/profiles"
 
+DEFAULT_PORT="3389"
+
 TARGET_IP=""
+PORT=""
 USERNAME=""
 PASSWORD=""
 PROFILE_LOADED=false
 
 usage() {
-    echo "Usage: $0 [username] [password] [target_ip]"
+    echo "Usage: $0 [username] [password] [target_ip] [port]"
     echo "Run without arguments to access the interactive profile menu."
+    echo "Port defaults to $DEFAULT_PORT (RDP default) when not specified."
     exit 1
 }
 
@@ -24,6 +28,12 @@ check_dependencies() {
 
     if ! command -v base64 >/dev/null 2>&1; then
         echo "Error: base64 is not installed or not in PATH."
+        exit 127
+    fi
+
+    # Check if X is NOT running, and if so, ensure startx is available
+    if [[ -z "${DISPLAY:-}" ]] && ! command -v startx >/dev/null 2>&1; then
+        echo "Error: X server is not running and startx is not installed."
         exit 127
     fi
 }
@@ -38,6 +48,22 @@ ask_for_username() {
     local username=""
     read -r -p "Username: " username
     printf '%s' "$username"
+}
+
+ask_for_port() {
+    local port=""
+    while true; do
+        read -r -p "Port [$DEFAULT_PORT]: " port
+        if [[ -z "$port" ]]; then
+            port="$DEFAULT_PORT"
+            break
+        fi
+        if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
+            break
+        fi
+        echo "Invalid port. Enter a number between 1 and 65535." >&2
+    done
+    printf '%s' "$port"
 }
 
 ask_for_password() {
@@ -101,6 +127,10 @@ load_profile() {
     TARGET_IP="$(sed -n '1p' "$file" | base64 -d 2>/dev/null)"
     USERNAME="$(sed -n '2p' "$file" | base64 -d 2>/dev/null)"
     PASSWORD="$(sed -n '3p' "$file" | base64 -d 2>/dev/null)"
+    PORT="$(sed -n '4p' "$file" | base64 -d 2>/dev/null)"
+
+    # Profiles created before port support won't have line 4; fall back.
+    [[ -z "$PORT" ]] && PORT="$DEFAULT_PORT"
 }
 
 save_profile() {
@@ -113,6 +143,8 @@ save_profile() {
         printf '%s' "$USERNAME" | base64 | tr -d '\n'
         printf '\n'
         printf '%s' "$PASSWORD" | base64 | tr -d '\n'
+        printf '\n'
+        printf '%s' "$PORT" | base64 | tr -d '\n'
         printf '\n'
     } > "$file"
 
@@ -130,6 +162,10 @@ edit_profile() {
     local new_ip=""
     read -r -p "Target IP [$TARGET_IP]: " new_ip
     [[ -n "$new_ip" ]] && TARGET_IP="$new_ip"
+
+    local new_port=""
+    read -r -p "Port [$PORT]: " new_port
+    [[ -n "$new_port" ]] && PORT="$new_port"
 
     local new_user=""
     read -r -p "Username [$USERNAME]: " new_user
@@ -150,6 +186,7 @@ get_credentials() {
         USERNAME="$1"
         PASSWORD="$2"
         TARGET_IP="${3:-}"
+        PORT="${4:-$DEFAULT_PORT}"
         if [[ -z "$TARGET_IP" ]]; then
             TARGET_IP="$(ask_for_targetip)"
         fi
@@ -209,11 +246,14 @@ EOF
         # Validate input is an integer
         if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
             echo "Invalid input. Please enter a number."
+            sleep 1
             continue
         fi
 
         if [[ "$choice" -eq "$new_opt" ]]; then
             TARGET_IP="$(ask_for_targetip)"
+            echo ""
+            PORT="$(ask_for_port)"
             echo ""
             USERNAME="$(ask_for_username)"
             echo ""
@@ -223,6 +263,7 @@ EOF
         elif [[ "$choice" -eq "$edit_opt" ]]; then
             if [[ ${#prof_names[@]} -eq 0 ]]; then
                 echo "No profiles to edit."
+                sleep 1
                 continue
             fi
             local edit_choice=""
@@ -232,11 +273,13 @@ EOF
                 edit_profile "${prof_names[$idx]}"
             else
                 echo "Invalid profile number."
+                sleep 1
             fi
             # Continues back to the main menu loop after editing
         elif [[ "$choice" -eq "$del_opt" ]]; then
             if [[ ${#prof_names[@]} -eq 0 ]]; then
                 echo "No profiles to delete."
+                sleep 1
                 continue
             fi
             local del_choice=""
@@ -245,8 +288,10 @@ EOF
                 local idx=$((del_choice-1))
                 rm -f "$PROFILES_DIR/${prof_names[$idx]}"
                 echo "Profile '${prof_names[$idx]}' deleted."
+                sleep 1
             else
                 echo "Invalid profile number."
+                sleep 1
             fi
         elif [[ "$choice" -eq "$quit_opt" ]]; then
             exit 0
@@ -258,6 +303,7 @@ EOF
             break
         else
             echo "Invalid option."
+            sleep 1
         fi
     done
 }
@@ -266,15 +312,36 @@ run_rdp() {
     local username="$1"
     local password="$2"
     local targetip="$3"
+    local port="${4:-$DEFAULT_PORT}"
 
-    xfreerdp3 \
-        "/u:$username" \
-        "/p:$password" \
-        "/v:$targetip" \
-        /cert:ignore \
-        /sound:sys:alsa \
-        /clipboard \
-        /f
+    # We must resolve the absolute path so startx knows it's an executable
+    local rdp_bin
+    rdp_bin="$(command -v xfreerdp3)"
+
+    if [[ -z "${DISPLAY:-}" ]]; then
+        # DISPLAY is not set; Xorg is not running.
+        # Start X and pass xfreerdp3 straight to it as the client application.
+        startx "$rdp_bin" \
+            "/u:$username" \
+            "/p:$password" \
+            "/v:$targetip" \
+            "/port:$port" \
+            /cert:ignore \
+            /sound:sys:alsa \
+            /clipboard \
+            /f
+    else
+        # Xorg is already running, run normally.
+        "$rdp_bin" \
+            "/u:$username" \
+            "/p:$password" \
+            "/v:$targetip" \
+            "/port:$port" \
+            /cert:ignore \
+            /sound:sys:alsa \
+            /clipboard \
+            /f
+    fi
 }
 
 is_successful_rdp_exit() {
@@ -301,8 +368,11 @@ main() {
 
     get_credentials "$@"
 
-    echo "Connecting to $TARGET_IP..."
-    run_rdp "$USERNAME" "$PASSWORD" "$TARGET_IP" > /dev/null 2> /dev/null
+    # Safety net in case a code path left the port unset.
+    [[ -z "$PORT" ]] && PORT="$DEFAULT_PORT"
+
+    echo "Connecting to $TARGET_IP:$PORT..."
+    run_rdp "$USERNAME" "$PASSWORD" "$TARGET_IP" "$PORT" > /dev/null 2> /dev/null
     local rdp_exit=$?
 
     # Only prompt to save if we didn't load an existing profile
