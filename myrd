@@ -366,39 +366,59 @@ main() {
     chmod 700 "$CONFIG_DIR" 2>/dev/null || true
     chmod 700 "$PROFILES_DIR" 2>/dev/null || true
 
-    get_credentials "$@"
+    # Keep running: after each session ends (clean exit OR error) we return
+    # to the menu instead of quitting. The first pass may honor CLI arguments;
+    # every later pass falls back to the interactive menu (the default screen).
+    # The menu's "Quit" option is the way out.
+    local first_run=true
 
-    # Safety net in case a code path left the port unset.
-    [[ -z "$PORT" ]] && PORT="$DEFAULT_PORT"
+    while true; do
+        if [[ "$first_run" == true ]]; then
+            get_credentials "$@"
+            first_run=false
+        else
+            # Reset per-connection state before showing the menu again.
+            TARGET_IP=""
+            PORT=""
+            USERNAME=""
+            PASSWORD=""
+            PROFILE_LOADED=false
+            get_credentials
+        fi
 
-    echo "Connecting to $TARGET_IP:$PORT..."
-    run_rdp "$USERNAME" "$PASSWORD" "$TARGET_IP" "$PORT" > /dev/null 2> /dev/null
-    local rdp_exit=$?
+        # Safety net in case a code path left the port unset.
+        [[ -z "$PORT" ]] && PORT="$DEFAULT_PORT"
 
-    # Only prompt to save if we didn't load an existing profile
-    if [[ "$PROFILE_LOADED" == false ]]; then
-        echo ""
-        local save_ans=""
-        read -r -p "Do you want to save this connection as a profile? (y/N): " save_ans
-        if [[ "$save_ans" =~ ^[Yy]$ ]]; then
-            local prof_name=""
-            read -r -p "Enter profile name (e.g., HomePC, WorkServer): " prof_name
-            if [[ -n "$prof_name" ]]; then
-                save_profile "$prof_name"
-                echo "Profile '$prof_name' saved successfully."
-            else
-                echo "No name provided, skipping save."
+        echo "Connecting to $TARGET_IP:$PORT..."
+        run_rdp "$USERNAME" "$PASSWORD" "$TARGET_IP" "$PORT" > /dev/null 2> /dev/null
+        local rdp_exit=$?
+
+        # Only prompt to save if we didn't load an existing profile
+        if [[ "$PROFILE_LOADED" == false ]]; then
+            echo ""
+            local save_ans=""
+            read -r -p "Do you want to save this connection as a profile? (y/N): " save_ans
+            if [[ "$save_ans" =~ ^[Yy]$ ]]; then
+                local prof_name=""
+                read -r -p "Enter profile name (e.g., HomePC, WorkServer): " prof_name
+                if [[ -n "$prof_name" ]]; then
+                    save_profile "$prof_name"
+                    echo "Profile '$prof_name' saved successfully."
+                else
+                    echo "No name provided, skipping save."
+                fi
             fi
         fi
-    fi
 
-    if is_successful_rdp_exit "$rdp_exit"; then
-        echo "Connection closed..."
-        exit 0
-    else
-        echo "RDP session closed with exit code $rdp_exit."
-        exit "$rdp_exit"
-    fi
+        if is_successful_rdp_exit "$rdp_exit"; then
+            echo "Connection closed..."
+        else
+            echo "RDP session closed with exit code $rdp_exit."
+        fi
+
+        echo ""
+        read -r -p "Press Enter to return to the menu..." _
+    done
 }
 
 main "$@"
